@@ -8,7 +8,7 @@ import java.io.IOException;
 /** Точка входа. Показывает меню, затем запускает игру в режиме хоста или клиента. */
 public class Main {
 
-    private final JFrame frame = new JFrame("Swing Game");
+    private final JFrame frame = new JFrame("Swing Zombie Game");
     private GamePanel currentGame;
 
     public static void main(String[] args) {

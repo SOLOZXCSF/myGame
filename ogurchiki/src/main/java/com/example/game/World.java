@@ -5,154 +5,154 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Игровой мир: игроки + зомби + пули + дырки.
- * Вся логика — только на хосте (updateHost).
+ * Игровой мир. Содержит игроков, зомби, пули и стены.
+ * Логика обновления (tick) выполняется только на сервере (хосте).
  */
 public class World {
 
-    public static final int WIDTH  = 800;
-    public static final int HEIGHT = 600;
+    public static final int WIDTH  = 1280;
+    public static final int HEIGHT = 720;
 
-    // ── коллекции ────────────────────────────────────────────────────────────
-    private final Map<Integer, Player>  players  = new ConcurrentHashMap<>();
-    private final List<Bullet>          bullets  = new CopyOnWriteArrayList<>();
-    private final List<Zombie>          zombies  = new CopyOnWriteArrayList<>();
-    private final List<ZombieHole>      holes    = new CopyOnWriteArrayList<>();
+    private final Map<Integer, Player> players = new ConcurrentHashMap<>();
+    private final List<Zombie> zombies         = new CopyOnWriteArrayList<>();
+    private final List<Bullet> bullets         = new CopyOnWriteArrayList<>();
+    private final List<Wall> walls             = new CopyOnWriteArrayList<>();
 
-    private final AtomicInteger zombieIdSeq = new AtomicInteger(0);
-
-    // волновой счётчик
-    private int    wave            = 1;
-    private double waveTimer       = 0;
-    private static final double WAVE_DURATION = 30.0; // сек на волну
-
-    // фиксированные дырки
-    private static final double[][] HOLE_COORDS = {
-        {80,  80},  {400, 40},  {720, 80},
-        {40,  300}, {760, 300},
-        {80,  520}, {400, 560}, {720, 520}
-    };
-
+    private double zombieSpawnTimer = 0;
+    private static final double ZOMBIE_SPAWN_INTERVAL = 2.5;
 
     public World() {
-        for (double[] c : HOLE_COORDS) {
-            holes.add(new ZombieHole(c[0], c[1], 10.0));
-        }
+        initWalls();
     }
 
-    // ── геттеры ──────────────────────────────────────────────────────────────
+    private void initWalls() {
+        // Создаем стены карты (центральный столп сдвинут, чтобы не перекрывать спавн)
+        walls.add(new Wall(200, 150, 400, 30));
+        walls.add(new Wall(680, 150, 400, 30));
+        walls.add(new Wall(590, 220, 100, 100)); // Убран перехват спавна (X:640, Y:360)
+        walls.add(new Wall(200, 540, 400, 30));
+        walls.add(new Wall(680, 540, 400, 30));
+    }
+
     public Map<Integer, Player> getPlayers() { return players; }
-    public List<Bullet>         getBullets() { return bullets; }
-    public List<Zombie>         getZombies() { return zombies; }
-    public List<ZombieHole>     getHoles()   { return holes; }
-    public int                  getWave()    { return wave; }
+    public List<Zombie> getZombies()         { return zombies; }
+    public List<Bullet> getBullets()         { return bullets; }
+    public List<Wall> getWalls()             { return walls; }
 
-    // ── спавн игрока ─────────────────────────────────────────────────────────
-    public Player spawn(int id) {
-        double x = 300 + (id * 150) % (WIDTH  - 300);
-        double y = 200 + (id * 110) % (HEIGHT - 300);
-        Player p = new Player(id, x, y, WIDTH, HEIGHT);
-        players.put(id, p);
-        return p;
+    public void addPlayer(Player player) {
+        players.put(player.getId(), player);
     }
 
-    private void respawn(Player p) {
-        p.hp = Player.MAX_HP;
-        p.x  = 300 + (p.getId() * 150 + 40) % (WIDTH  - 300);
-        p.y  = 200 + (p.getId() * 110 + 40) % (HEIGHT - 300);
+    public void removePlayer(int playerId) {
+        players.remove(playerId);
     }
 
-    // ── главный апдейт (только хост) ─────────────────────────────────────────
-    public void updateHost(double dt) {
-        waveTimer += dt;
-        if (waveTimer >= WAVE_DURATION) {
-            waveTimer -= WAVE_DURATION;
-            wave++;
-            // ускоряем дырки с каждой волной
-            double interval = Math.max(0.5, 4.0 - wave * 0.25);
-            for (ZombieHole h : holes) h.setSpawnInterval(interval);
+    public void update(double dt) {
+        // 1. Обновляем игроков и собираем новые пули от выстрелов
+        List<Bullet> newBullets = new ArrayList<>();
+        for (Player p : players.values()) {
+            if (p.hp > 0) {
+                List<Bullet> shots = p.tick(dt, walls);
+                newBullets.addAll(shots);
+            }
+        }
+        bullets.addAll(newBullets);
+
+        // 2. Спавн зомби
+        zombieSpawnTimer += dt;
+        if (zombieSpawnTimer >= ZOMBIE_SPAWN_INTERVAL && !players.isEmpty()) {
+            zombieSpawnTimer = 0;
+            spawnZombie();
         }
 
-        // спавн зомби из дырок
-        List<Player> playerList = new ArrayList<>(players.values());
-        if (!playerList.isEmpty()) {
-            for (ZombieHole h : holes) {
-                if (h.update(dt)) {
-                    int hp    = 1;          // крепче с волнами
-                    double spd = Math.min(SPEED_FOR_WAVE(wave), 150);
-                    zombies.add(new Zombie(zombieIdSeq.getAndIncrement(),
-                                          h.x, h.y, hp, spd));
+        // 3. Обновляем зомби
+        for (Zombie z : zombies) {
+            z.update(dt, players.values(), walls);
+        }
+
+        // 4. Обновляем пули
+        for (Bullet b : bullets) {
+            b.update(dt);
+        }
+
+        // 5. Обработка коллизий
+        checkCollisions();
+
+        // 6. Удаляем неактивные пули и мертвых зомби
+        bullets.removeIf(b -> !b.isAlive() || checkBulletWallCollision(b));
+        zombies.removeIf(z -> z.getHp() <= 0);
+    }
+
+    private void spawnZombie() {
+        double x, y;
+        if (Math.random() < 0.5) {
+            x = Math.random() < 0.5 ? -20 : WIDTH + 20;
+            y = Math.random() * HEIGHT;
+        } else {
+            x = Math.random() * WIDTH;
+            y = Math.random() < 0.5 ? -20 : HEIGHT + 20;
+        }
+        zombies.add(new Zombie(x, y));
+    }
+
+    private boolean checkBulletWallCollision(Bullet b) {
+        for (Wall wall : walls) {
+            if (wall.intersectsCircle((float) b.getX(), (float) b.getY(), (float) b.getRadius())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public Player spawn(int id) {
+        // Безопасная точка спавна игрока (по центру экрана, вне центральной стены)
+        double spawnX = (WIDTH / 2.0) - 16 + (id * 40);
+        double spawnY = (HEIGHT / 2.0) - 16;
+
+        Player player = new Player(id, spawnX, spawnY, WIDTH, HEIGHT);
+        addPlayer(player);
+        return player;
+    }
+
+    private void checkCollisions() {
+        // Пули <-> Зомби
+        for (Bullet b : bullets) {
+            if (!b.isAlive()) continue;
+
+            for (Zombie z : zombies) {
+                if (z.getHp() <= 0) continue;
+
+                if (b.intersects(z)) {
+                    b.setAlive(false);
+                    z.hit(1);
+
+                    if (z.getHp() <= 0) {
+                        Player shooter = players.get(b.getOwnerId());
+                        if (shooter != null) {
+                            shooter.addKill();
+                        }
+                    }
+                    break;
                 }
             }
         }
 
-        // двигаем зомби
-        for (Zombie z : zombies) z.tick(dt, playerList);
-        zombies.removeIf(z -> !z.isAlive());
+        // Зомби <-> Игроки
+        for (Zombie z : zombies) {
+            if (z.getHp() <= 0) continue;
 
-        // двигаем игроков → собираем пули
-        for (Player p : players.values()) {
-            List<Bullet> shots = p.tick(dt);
-            bullets.addAll(shots);
-        }
+            for (Player p : players.values()) {
+                if (p.hp <= 0) continue;
 
-        // двигаем пули
-        for (Bullet b : bullets) b.update(dt);
-        bullets.removeIf(b -> !b.isAlive());
-
-        // коллизии: пуля игрока → зомби
-        List<Bullet> bSnap = new ArrayList<>(bullets);
-        List<Zombie> zSnap = new ArrayList<>(zombies);
-        for (Bullet b : bSnap) {
-            if (b.ownerId < 0) continue;  // пуля зомби
-            for (Zombie z : zSnap) {
-                if (!b.isAlive() || !z.isAlive()) continue;
-                if (b.collidesWith(z)) {
-                    b.alive = false;
-                    if (z.hit(1)) {
-                        // зомби убит — засчитываем игроку
-                        Player killer = players.get(b.ownerId);
-                        if (killer != null) killer.addKill();
+                if (z.intersects(p)) {
+                    if (z.canAttack()) {
+                        z.resetAttackCooldown();
+                        p.hit();
                     }
                 }
             }
         }
-        bullets.removeIf(b -> !b.isAlive());
-        zombies.removeIf(z -> !z.isAlive());
-
-        // коллизии: зомби → игрок (контактный урон)
-        for (Zombie z : new ArrayList<>(zombies)) {
-            for (Player p : playerList) {
-                if (z.isAlive() && z.collidesWith(p)) {
-                    // зомби кусает и немного отталкивается
-                    if (p.hit()) respawn(p);
-                    // откат зомби
-                    z.x -= (p.getX() - z.x) * 0.3;
-                    z.y -= (p.getY() - z.y) * 0.3;
-                    z.x = Math.max(0, Math.min(z.x, WIDTH  - Zombie.SIZE));
-                    z.y = Math.max(0, Math.min(z.y, HEIGHT - Zombie.SIZE));
-                }
-            }
-        }
-
-        // коллизии: пуля игрока → другой игрок (PvP)
-        for (Bullet b : new ArrayList<>(bullets)) {
-            if (b.ownerId < 0) continue;
-            for (Player p : playerList) {
-                if (p.getId() == b.ownerId) continue;
-                if (b.isAlive() && b.collidesWith(p)) {
-                    b.alive = false;
-                    if (p.hit()) respawn(p);
-                }
-            }
-        }
-        bullets.removeIf(b -> !b.isAlive());
-    }
-
-    private static double SPEED_FOR_WAVE(int wave) {
-        return 55 + wave * 8;
     }
 }

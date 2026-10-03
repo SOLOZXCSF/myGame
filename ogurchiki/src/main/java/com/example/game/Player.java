@@ -7,11 +7,9 @@ import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.geom.Line2D;
 import java.awt.geom.RoundRectangle2D;
+import java.util.ArrayList;
+import java.util.List;
 
-/**
- * Игрок: движение + стрельба (с разными типами оружий) + 3 ХП.
- * Логика — только на хосте; клиент получает (x,y,hp,aimDX,aimDY,kills,weaponOrdinal).
- */
 public class Player extends Sprite {
 
     public static final int MAX_HP = 3;
@@ -21,23 +19,21 @@ public class Player extends Sprite {
     private static final int    GUN_W   = 5;
 
     private static final Color[] PALETTE = {
-        Color.CYAN, Color.ORANGE, Color.GREEN, Color.PINK,
-        Color.YELLOW, new Color(160, 120, 255), Color.RED, Color.WHITE
+            Color.CYAN, Color.ORANGE, Color.GREEN, Color.PINK,
+            Color.YELLOW, new Color(160, 120, 255), Color.RED, Color.WHITE
     };
 
     private final int id;
     private final int worldWidth;
     private final int worldHeight;
 
-    // состояние (volatile: читается потоком отрисовки)
     private volatile int inputMask;
-    public  volatile int   hp           = MAX_HP;
-    public  volatile float aimDX        = 1f;
-    public  volatile float aimDY        = 0f;
-    public  volatile int   kills        = 0;   // убийства зомби (для HUD и оружия)
-    public  volatile int   weaponOrdinal = 0;  // WeaponType.ordinal()
+    public  volatile int   hp            = MAX_HP;
+    public  volatile float aimDX         = 1f;
+    public  volatile float aimDY         = 0f;
+    public  volatile int   kills         = 0;
+    public  volatile int   weaponOrdinal = 0;
 
-    // только хост
     private double shootCooldown = 0;
     private double hitFlash      = 0;
 
@@ -52,13 +48,27 @@ public class Player extends Sprite {
     public int getId() { return id; }
     public void setInputMask(int mask) { this.inputMask = mask; }
 
+    public void setAim(double mouseX, double mouseY) {
+        double cx = x + width / 2.0;
+        double cy = y + height / 2.0;
+
+        double dirX = mouseX - cx;
+        double dirY = mouseY - cy;
+        double len = Math.hypot(dirX, dirY);
+
+        if (len > 0.001) {
+            this.aimDX = (float) (dirX / len);
+            this.aimDY = (float) (dirY / len);
+        }
+    }
+
     public boolean hit() {
         hitFlash = 0.15;
         return --hp <= 0;
     }
 
-    public void markHit()    { hitFlash = 0.15; }
-    public void addKill()    {
+    public void markHit() { hitFlash = 0.15; }
+    public void addKill() {
         kills++;
         weaponOrdinal = WeaponType.forKills(kills).ordinal();
     }
@@ -68,36 +78,49 @@ public class Player extends Sprite {
         return vals[Math.min(weaponOrdinal, vals.length - 1)];
     }
 
-    /**
-     * Обновление на хосте. Возвращает пули (0-3 штуки).
-     */
-    public java.util.List<Bullet> tick(double dt) {
+    public List<Bullet> tick(double dt, List<Wall> walls) {
         int mask = inputMask;
-        double dx = ((mask & KeyInput.RIGHT) != 0 ? 1 : 0) - ((mask & KeyInput.LEFT)  != 0 ? 1 : 0);
-        double dy = ((mask & KeyInput.DOWN)  != 0 ? 1 : 0) - ((mask & KeyInput.UP)    != 0 ? 1 : 0);
+        double dx = ((mask & KeyInput.RIGHT) != 0 ? 1 : 0) - ((mask & KeyInput.LEFT) != 0 ? 1 : 0);
+        double dy = ((mask & KeyInput.DOWN)  != 0 ? 1 : 0) - ((mask & KeyInput.UP)   != 0 ? 1 : 0);
 
-        if (dx != 0 && dy != 0) { dx *= 0.7071; dy *= 0.7071; }
-        if (dx != 0 || dy != 0) { aimDX = (float) dx; aimDY = (float) dy; }
+        if (dx != 0 && dy != 0) {
+            dx *= 0.7071;
+            dy *= 0.7071;
+        }
 
-        x = Math.max(0, Math.min(x + dx * SPEED * dt, worldWidth  - width));
-        y = Math.max(0, Math.min(y + dy * SPEED * dt, worldHeight - height));
+        // --- ДВИЖЕНИЕ С КОЛЛИЗИЕЙ ---
+        float radius = (float) (width / 2.0);
 
+        // 1. Движение по оси X
+        double oldX = this.x;
+        this.x = Math.max(0, Math.min(this.x + dx * SPEED * dt, worldWidth - width));
+        if (checkWallCollision(walls, radius)) {
+            this.x = oldX;
+        }
+
+        // 2. Движение по оси Y
+        double oldY = this.y;
+        this.y = Math.max(0, Math.min(this.y + dy * SPEED * dt, worldHeight - height));
+        if (checkWallCollision(walls, radius)) {
+            this.y = oldY;
+        }
+
+        // --- СТРЕЛЬБА ---
         shootCooldown -= dt;
         if (hitFlash > 0) hitFlash -= dt;
 
-        java.util.List<Bullet> shots = new java.util.ArrayList<>();
+        List<Bullet> shots = new ArrayList<>();
         if (shootCooldown <= 0 && (mask & KeyInput.SHOOT) != 0) {
             WeaponType w = getWeapon();
             shootCooldown = w.shootDelay;
 
             double len = Math.hypot(aimDX, aimDY);
-            double ndx = aimDX / len;
-            double ndy = aimDY / len;
+            double ndx = (len > 0) ? aimDX / len : 1.0;
+            double ndy = (len > 0) ? aimDY / len : 0.0;
             double cx  = x + width  / 2.0;
             double cy  = y + height / 2.0;
 
             if (w == WeaponType.SHOTGUN) {
-                // 3 пули веером ±20°
                 for (int spread : new int[]{-20, 0, 20}) {
                     double rad = Math.toRadians(spread);
                     double sdx = ndx * Math.cos(rad) - ndy * Math.sin(rad);
@@ -111,16 +134,29 @@ public class Player extends Sprite {
         return shots;
     }
 
+    private boolean checkWallCollision(List<Wall> walls, float radius) {
+        if (walls == null || walls.isEmpty()) return false;
+
+        float centerX = (float) (x + width / 2.0);
+        float centerY = (float) (y + height / 2.0);
+
+        for (Wall wall : walls) {
+            if (wall.intersectsCircle(centerX, centerY, radius)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private Bullet makeBullet(int ownerId, double cx, double cy,
-                               double ndx, double ndy, WeaponType w) {
-        double ox = cx + ndx * (GUN_LEN + width  / 2.0);
+                              double ndx, double ndy, WeaponType w) {
+        double ox = cx + ndx * (GUN_LEN + width / 2.0);
         double oy = cy + ndy * (GUN_LEN + height / 2.0);
         return new Bullet(ownerId, ox, oy,
                 ndx * w.bulletSpeed, ndy * w.bulletSpeed,
                 w.bulletRadius, w.bulletColor);
     }
 
-    // вызывается на клиенте для анимации hitFlash
     @Override
     public void update(double dt) {
         if (hitFlash > 0) hitFlash -= dt;
@@ -131,17 +167,16 @@ public class Player extends Sprite {
         double cx = x + width  / 2.0;
         double cy = y + height / 2.0;
 
-        // тело
         g.setColor(hitFlash > 0 ? Color.WHITE : color);
         g.fill(new RoundRectangle2D.Double(x, y, width, height, 8, 8));
 
-        // пистолет (ствол длиннее/толще у лучших оружий)
         WeaponType w    = getWeapon();
         int        gLen = GUN_LEN + w.ordinal() * 3;
         int        gW   = GUN_W   + w.ordinal();
         double len  = Math.hypot(aimDX, aimDY);
-        double ndx  = aimDX / len,  ndy = aimDY / len;
-        double gx1  = cx + ndx * (width  / 2.0 - 2);
+        double ndx  = (len > 0) ? aimDX / len : 1.0;
+        double ndy  = (len > 0) ? aimDY / len : 0.0;
+        double gx1  = cx + ndx * (width / 2.0 - 2);
         double gy1  = cy + ndy * (height / 2.0 - 2);
 
         g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
@@ -150,14 +185,12 @@ public class Player extends Sprite {
         g.draw(new Line2D.Double(gx1, gy1, gx1 + ndx * gLen, gy1 + ndy * gLen));
         g.setStroke(new BasicStroke(1));
 
-        // метка + оружие
         g.setFont(new Font("SansSerif", Font.BOLD, 10));
         g.setColor(Color.WHITE);
         String lbl = "P" + id + " [" + w.name + "]";
         int tw = g.getFontMetrics().stringWidth(lbl);
         g.drawString(lbl, (int)(cx - tw / 2.0), (int) y - 4);
 
-        // HP сердечки
         for (int i = 0; i < MAX_HP; i++) {
             g.setColor(i < hp ? Color.RED : new Color(80, 20, 20));
             drawHeart(g, (int)(x + i * 12), (int)(y + height + 4), 10);

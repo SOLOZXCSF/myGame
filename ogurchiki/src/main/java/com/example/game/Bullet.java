@@ -3,6 +3,7 @@ package com.example.game;
 import java.awt.Color;
 import java.awt.Graphics2D;
 import java.awt.geom.Ellipse2D;
+import java.util.List;
 
 /**
  * Пуля. Летит прямолинейно, живёт MAX_AGE секунд.
@@ -11,8 +12,8 @@ import java.awt.geom.Ellipse2D;
  */
 public class Bullet extends Sprite {
 
-    public static final double SPEED    = 520;
-    public static final double MAX_AGE  = 1.6;
+    public static final double SPEED   = 520;
+    public static final double MAX_AGE = 1.6;
 
     public final int    ownerId;   // id игрока или -1 (зомби)
     private final double vx;
@@ -36,11 +37,38 @@ public class Bullet extends Sprite {
         this.color   = color;
     }
 
+    public int getOwnerId() { return ownerId; }
+    public int getRadius()  { return radius; }
+
+    /**
+     * Обновление на хосте/сервере с проверкой коллизии со стенами.
+     */
+    public void update(double dt, List<Wall> walls) {
+        // Сначала обновляем позицию и базовые границы карты
+        update(dt);
+
+        // Если пуля уже неживая, проверять коллизию со стенами не нужно
+        if (!alive || walls == null || walls.isEmpty()) return;
+
+        // Вычисляем текущий центр пули
+        float cx = (float) (x + radius);
+        float cy = (float) (y + radius);
+
+        // Проверяем попадание в любую из стен
+        for (Wall wall : walls) {
+            if (wall.intersectsCircle(cx, cy, radius)) {
+                alive = false;
+                break;
+            }
+        }
+    }
+
     @Override
     public void update(double dt) {
         x   += vx * dt;
         y   += vy * dt;
         age += dt;
+
         if (age >= MAX_AGE
                 || x < -40 || x > World.WIDTH  + 40
                 || y < -40 || y > World.HEIGHT + 40) {
@@ -50,14 +78,17 @@ public class Bullet extends Sprite {
 
     @Override
     public void render(Graphics2D g) {
-        // ядро
+        // Ядро пули
         g.setColor(color);
         g.fill(new Ellipse2D.Double(x, y, width, height));
-        // свечение
-        g.setColor(new Color(color.getRed(), color.getGreen(), color.getBlue(), 70));
-        g.fill(new Ellipse2D.Double(x - radius * 0.6, y - radius * 0.6,
-                                    width + radius * 1.2, height + radius * 1.2));
-    }
 
-    public int getRadius() { return radius; }
+        // Эффект свечения вокруг пули
+        g.setColor(new Color(color.getRed(), color.getGreen(), color.getBlue(), 70));
+        g.fill(new Ellipse2D.Double(
+                x - radius * 0.6,
+                y - radius * 0.6,
+                width + radius * 1.2,
+                height + radius * 1.2
+        ));
+    }
 }

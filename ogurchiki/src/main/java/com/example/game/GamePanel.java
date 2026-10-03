@@ -1,7 +1,6 @@
 package com.example.game;
 
 import javax.swing.JPanel;
-import javax.swing.SwingUtilities;
 import java.awt.BasicStroke;
 import java.awt.Color;
 import java.awt.Dimension;
@@ -9,199 +8,257 @@ import java.awt.Font;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
+import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
-import java.awt.geom.RoundRectangle2D;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
+import java.awt.event.MouseMotionAdapter;
 
 public class GamePanel extends JPanel implements Runnable {
-
-    private static final double UPS              = 60.0;
-    private static final double NANOS_PER_UPDATE = 1_000_000_000.0 / UPS;
 
     private final World      world;
     private final GameServer server;
     private final GameClient client;
-    private final int        localId;
+    private final int        myPlayerId;
     private final Runnable   onExit;
-    private final KeyInput   input = new KeyInput();
 
-    private volatile boolean running;
-    private int fps;
+    private Thread  gameThread;
+    private boolean running;
 
-    // уведомление о новом оружии
-    private String  weaponNotice     = "";
-    private double  weaponNoticeTime = 0;
-    private int     lastWeaponOrd    = 0;
+    private int inputMask = 0;
+    private int mouseX    = 0;
+    private int mouseY    = 0;
 
-    public GamePanel(World world, GameServer server, GameClient client,
-                     int localId, Runnable onExit) {
-        this.world   = world;
-        this.server  = server;
-        this.client  = client;
-        this.localId = localId;
-        this.onExit  = onExit;
+    public GamePanel(World world, GameServer server, GameClient client, int myPlayerId, Runnable onExit) {
+        this.world      = world;
+        this.server     = server;
+        this.client     = client;
+        this.myPlayerId = myPlayerId;
+        this.onExit     = onExit;
+
         setPreferredSize(new Dimension(World.WIDTH, World.HEIGHT));
-        setBackground(new Color(30, 30, 40));
+        setBackground(new Color(30, 30, 35));
         setFocusable(true);
-        addKeyListener(input);
+
+        setupControls();
     }
 
-    public synchronized void start() {
-        if (running) return;
+    private void setupControls() {
+        // --- КЛАВИАТУРА ---
+        addKeyListener(new KeyAdapter() {
+            @Override
+            public void keyPressed(KeyEvent e) {
+                updateKey(e.getKeyCode(), true);
+            }
+
+            @Override
+            public void keyReleased(KeyEvent e) {
+                updateKey(e.getKeyCode(), false);
+            }
+        });
+
+        // --- МЫШЬ (Стрельба) ---
+        addMouseListener(new MouseAdapter() {
+            @Override
+            public void mousePressed(MouseEvent e) {
+                if (e.getButton() == MouseEvent.BUTTON1) {
+                    inputMask |= KeyInput.SHOOT;
+                    sendInputWithAim();
+                }
+            }
+
+            @Override
+            public void mouseReleased(MouseEvent e) {
+                if (e.getButton() == MouseEvent.BUTTON1) {
+                    inputMask &= ~KeyInput.SHOOT;
+                    sendInputWithAim();
+                }
+            }
+        });
+
+        // --- МЫШЬ (Прицеливание) ---
+        MouseMotionAdapter mouseAdapter = new MouseMotionAdapter() {
+            @Override
+            public void mouseMoved(MouseEvent e) {
+                updateMousePos(e.getX(), e.getY());
+            }
+
+            @Override
+            public void mouseDragged(MouseEvent e) {
+                updateMousePos(e.getX(), e.getY());
+            }
+        };
+        addMouseMotionListener(mouseAdapter);
+    }
+
+    private void updateKey(int keyCode, boolean pressed) {
+        int bit = 0;
+        if (keyCode == KeyEvent.VK_W || keyCode == KeyEvent.VK_UP)    bit = KeyInput.UP;
+        if (keyCode == KeyEvent.VK_S || keyCode == KeyEvent.VK_DOWN)  bit = KeyInput.DOWN;
+        if (keyCode == KeyEvent.VK_A || keyCode == KeyEvent.VK_LEFT)  bit = KeyInput.LEFT;
+        if (keyCode == KeyEvent.VK_D || keyCode == KeyEvent.VK_RIGHT) bit = KeyInput.RIGHT;
+
+        if (bit != 0) {
+            if (pressed) inputMask |= bit;
+            else         inputMask &= ~bit;
+            sendInputWithAim();
+        }
+    }
+
+    private void updateMousePos(int x, int y) {
+        this.mouseX = x;
+        this.mouseY = y;
+        sendInputWithAim();
+    }
+
+    private void sendInputWithAim() {
+        Player p = world.getPlayers().get(myPlayerId);
+        float aimDX = 1f, aimDY = 0f;
+
+        if (p != null) {
+            double cx = p.getX() + p.getWidth() / 2.0;
+            double cy = p.getY() + p.getHeight() / 2.0;
+            double dirX = mouseX - cx;
+            double dirY = mouseY - cy;
+            double len = Math.hypot(dirX, dirY);
+
+            if (len > 0.001) {
+                aimDX = (float) (dirX / len);
+                aimDY = (float) (dirY / len);
+            }
+            p.setAim(mouseX, mouseY);
+        }
+
+        if (client != null) {
+            client.sendInput(inputMask, aimDX, aimDY);
+        } else if (server != null) {
+            server.setPlayerInput(myPlayerId, inputMask, aimDX, aimDY);
+        }
+    }
+
+    public void start() {
         running = true;
-        new Thread(this, "game-loop").start();
+        gameThread = new Thread(this, "game-loop");
+        gameThread.start();
     }
-
-    public synchronized void stop() {
-        running = false;
-        if (server != null) server.close();
-        if (client != null) client.close();
-    }
-
-    private void leave() { stop(); SwingUtilities.invokeLater(onExit); }
 
     @Override
     public void run() {
-        long   prev  = System.nanoTime();
-        double accum = 0;
-        long   fpsT  = prev;
-        int    frames = 0;
-
+        long lastTime = System.nanoTime();
         while (running) {
             long now = System.nanoTime();
-            accum += (now - prev);
-            prev = now;
+            double dt = (now - lastTime) / 1e9;
+            lastTime = now;
 
-            while (accum >= NANOS_PER_UPDATE) {
-                update(1.0 / UPS);
-                accum -= NANOS_PER_UPDATE;
+            if (server != null) {
+                world.update(dt);
+            } else {
+                for (Player p : world.getPlayers().values()) {
+                    p.update(dt);
+                }
             }
-            if (input.isDown(KeyEvent.VK_ESCAPE)) { leave(); return; }
+
             repaint();
-            frames++;
-            if (now - fpsT >= 1_000_000_000L) { fps = frames; frames = 0; fpsT = now; }
-            try { Thread.sleep(2); }
-            catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+
+            try {
+                Thread.sleep(16);
+            } catch (InterruptedException e) {
+                break;
+            }
         }
     }
-
-    private void update(double dt) {
-        if (server != null) {
-            Player me = world.getPlayers().get(localId);
-            if (me != null) me.setInputMask(input.getMask());
-            world.updateHost(dt);
-            server.broadcast();
-            checkWeaponUpgrade();
-        } else if (client != null) {
-            client.sendInput(input.getMask());
-            for (Player p : world.getPlayers().values()) p.update(dt);
-            checkWeaponUpgrade();
-        }
-        if (weaponNoticeTime > 0) weaponNoticeTime -= dt;
-    }
-
-    private void checkWeaponUpgrade() {
-        Player me = world.getPlayers().get(localId);
-        if (me == null) return;
-        if (me.weaponOrdinal > lastWeaponOrd) {
-            lastWeaponOrd   = me.weaponOrdinal;
-            weaponNotice    = "🔫 Новое оружие: " + me.getWeapon().name + "!";
-            weaponNoticeTime = 3.0;
-        }
-    }
-
-    // ── отрисовка ─────────────────────────────────────────────────────────────
 
     @Override
     protected void paintComponent(Graphics g) {
         super.paintComponent(g);
-        Graphics2D g2 = (Graphics2D) g;
-        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        Graphics2D g2d = (Graphics2D) g;
 
-        drawGrid(g2);
+        g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
 
-        // дырки (рисуем до игроков, чтобы были под ними)
-        for (ZombieHole h : world.getHoles()) h.render(g2);
+        // 1. Отрисовка стен
+        for (Wall wall : world.getWalls()) {
+            wall.draw(g2d);
+        }
 
-        // зомби
-        for (Zombie z : world.getZombies()) z.render(g2);
+        // 2. Зомби
+        for (Zombie z : world.getZombies()) {
+            z.render(g2d);
+        }
 
-        // пули
-        for (Bullet b : world.getBullets()) b.render(g2);
+        // 3. Пули
+        for (Bullet b : world.getBullets()) {
+            b.render(g2d);
+        }
 
-        // игроки
+        // 4. Игроки (каждый игрок сам рисует свои ХП под своими ногами)
         for (Player p : world.getPlayers().values()) {
-            p.render(g2);
-            if (p.getId() == localId) {
-                g2.setColor(Color.WHITE);
-                g2.setStroke(new BasicStroke(2));
-                g2.drawRoundRect((int) p.getX() - 3, (int) p.getY() - 3,
-                        p.getWidth() + 5, p.getHeight() + 5, 10, 10);
-                g2.setStroke(new BasicStroke(1));
-            }
+            p.render(g2d);
         }
 
-        drawHud(g2);
+        // 5. Отрисовка HUD (Интерфейса сверху)
+        drawHUD(g2d);
+
+        // 6. Прицел мыши
+        drawCrosshair(g2d, mouseX, mouseY);
     }
 
-    private void drawGrid(Graphics2D g) {
-        g.setColor(new Color(45, 45, 60));
-        for (int x = 0; x < World.WIDTH;  x += 60) g.drawLine(x, 0, x, World.HEIGHT);
-        for (int y = 0; y < World.HEIGHT; y += 60) g.drawLine(0, y, World.WIDTH, y);
-    }
+    private void drawHUD(Graphics2D g) {
+        Player me = world.getPlayers().get(myPlayerId);
 
-    private void drawHud(Graphics2D g) {
-        int wave   = (client != null) ? client.wave : world.getWave();
-        Player me  = world.getPlayers().get(localId);
+        // Плашка HUD на верху экрана
+        g.setColor(new Color(0, 0, 0, 180));
+        g.fillRect(10, 10, 280, 75);
+        g.setColor(new Color(100, 100, 100));
+        g.drawRect(10, 10, 280, 75);
 
-        // верхняя полоска
-        g.setFont(new Font("SansSerif", Font.BOLD, 13));
-        g.setColor(new Color(200, 200, 200, 200));
-        String role = server != null
-                ? "ХОСТ  клиентов: " + server.getClientCount()
-                : "КЛИЕНТ";
-        g.drawString(role + "  |  FPS: " + fps
-                + "  |  Волна: " + wave
-                + "  |  WASD — движение   ПРОБЕЛ — огонь   Esc — меню",
-                10, 20);
+        g.setFont(new Font("SansSerif", Font.BOLD, 14));
 
-        // счётчик убийств + оружие (низ экрана)
         if (me != null) {
-            WeaponType next = nextWeapon(me.getWeapon());
-            String killStr = "Убийств: " + me.kills;
-            if (next != null) killStr += "  /  " + next.killsNeeded + " → " + next.name;
-            drawPill(g, killStr, World.WIDTH / 2, World.HEIGHT - 18);
-        }
+            // Здоровье
+            g.setColor(Color.WHITE);
+            g.drawString("Здоровье: ", 20, 32);
+            for (int i = 0; i < Player.MAX_HP; i++) {
+                g.setColor(i < me.hp ? Color.RED : Color.DARK_GRAY);
+                g.fillRect(100 + i * 22, 20, 18, 14);
+                g.setColor(Color.BLACK);
+                g.drawRect(100 + i * 22, 20, 18, 14);
+            }
 
-        // уведомление о новом оружии
-        if (weaponNoticeTime > 0) {
-            float alpha = (float) Math.min(1.0, weaponNoticeTime);
-            g.setColor(new Color(1f, 0.9f, 0f, alpha));
-            g.setFont(new Font("SansSerif", Font.BOLD, 22));
-            int tw = g.getFontMetrics().stringWidth(weaponNotice);
-            g.drawString(weaponNotice, (World.WIDTH - tw) / 2, World.HEIGHT / 2 - 60);
-        }
+            // Убийства
+            g.setColor(Color.YELLOW);
+            g.drawString("Убийств: " + me.kills, 20, 52);
 
-        // потеря связи
-        if (client != null && !client.isConnected()) {
+            // Оружие
+            g.setColor(Color.CYAN);
+            g.drawString("Оружие: " + me.getWeapon().name, 20, 72);
+        } else {
             g.setColor(Color.RED);
-            g.setFont(new Font("SansSerif", Font.BOLD, 18));
-            g.drawString("Соединение потеряно — нажмите Esc", 180, 300);
+            g.drawString("ВЫ ПОГИБЛИ", 20, 45);
         }
-    }
 
-    private void drawPill(Graphics2D g, String text, int cx, int cy) {
-        g.setFont(new Font("SansSerif", Font.BOLD, 13));
-        int tw = g.getFontMetrics().stringWidth(text);
-        int pw = tw + 20, ph = 20;
-        g.setColor(new Color(0, 0, 0, 160));
-        g.fill(new RoundRectangle2D.Double(cx - pw / 2.0, cy - ph / 2.0, pw, ph, 10, 10));
+        // Информация о волне / клиентах
+        int waveNum = (client != null) ? client.wave : 1;
+        String infoStr = "Волна: " + waveNum;
+        if (server != null) {
+            infoStr += " | Игроков: " + (server.getClientCount() + 1);
+        }
+
+        g.setColor(new Color(0, 0, 0, 180));
+        g.fillRect(World.WIDTH - 180, 10, 170, 30);
         g.setColor(Color.WHITE);
-        g.drawString(text, cx - tw / 2, cy + 5);
+        g.drawString(infoStr, World.WIDTH - 170, 30);
     }
 
-    private WeaponType nextWeapon(WeaponType current) {
-        WeaponType[] vals = WeaponType.values();
-        int idx = current.ordinal() + 1;
-        return idx < vals.length ? vals[idx] : null;
+    private void drawCrosshair(Graphics2D g, int x, int y) {
+        g.setColor(Color.RED);
+        int size = 8;
+        int gap = 3;
+
+        g.drawLine(x - size, y, x - gap, y);
+        g.drawLine(x + size, y, x + gap, y);
+        g.drawLine(x, y - size, x, y - gap);
+        g.drawLine(x, y + gap, x, y + size);
+
+        g.fillRect(x - 1, y - 1, 2, 2);
     }
 }

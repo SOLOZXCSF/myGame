@@ -18,13 +18,18 @@ public class GameClient implements Closeable {
     private Socket           socket;
     private DataOutputStream out;
     private int              localId;
-    private int              lastSentMask = -1;
     private volatile boolean connected;
 
-    // волна (клиент только отображает)
+    // Кэш последнего отправленного состояния, чтобы не спамить сеть
+    private int   lastSentMask = -1;
+    private float lastSentAimX = -999f;
+    private float lastSentAimY = -999f;
+
     public volatile int wave = 1;
 
-    public GameClient(World world) { this.world = world; }
+    public GameClient(World world) {
+        this.world = world;
+    }
 
     public void connect(String host, int port) throws IOException {
         socket = new Socket();
@@ -55,15 +60,18 @@ public class GameClient implements Closeable {
                     int   kills = in.readInt();
                     int   wOrd  = in.readInt();
                     seenP.add(id);
+
                     Player p = world.getPlayers()
-                        .computeIfAbsent(id, k -> new Player(k, x, y, World.WIDTH, World.HEIGHT));
+                            .computeIfAbsent(id, k -> new Player(k, x, y, World.WIDTH, World.HEIGHT));
                     int oldHp = p.hp;
+
                     p.setPosition(x, y);
                     p.hp            = hp;
                     p.aimDX         = aimDX;
                     p.aimDY         = aimDY;
                     p.kills         = kills;
                     p.weaponOrdinal = wOrd;
+
                     if (hp < oldHp) p.markHit();
                 }
                 world.getPlayers().keySet().retainAll(seenP);
@@ -89,9 +97,8 @@ public class GameClient implements Closeable {
                     float zy    = in.readFloat();
                     int   hp    = in.readInt();
                     int   maxHp = in.readInt();
-                    Zombie z = new Zombie(i, zx + Zombie.SIZE / 2.0, zy + Zombie.SIZE / 2.0,
-                                          maxHp, 0);
-                    // вручную задаём hp (он может быть частично убит)
+                    Zombie z = new Zombie(i, zx + Zombie.SIZE / 2.0, zy + Zombie.SIZE / 2.0, maxHp, 0);
+
                     while (z.getHp() > hp) z.hit(1);
                     freshZ.add(z);
                 }
@@ -102,24 +109,45 @@ public class GameClient implements Closeable {
                 wave = in.readInt();
             }
         } catch (IOException ignored) {
-        } finally { connected = false; }
+        } finally {
+            connected = false;
+        }
     }
 
-    public synchronized void sendInput(int mask) {
-        if (!connected || mask == lastSentMask) return;
+    /**
+     * Отправка ввода с учетом направления прицела мыши.
+     */
+    public synchronized void sendInput(int mask, float aimDX, float aimDY) {
+        if (!connected) return;
+        // Отправляем, если изменилась маска ИЛИ существенно изменился вектор прицела
+        if (mask == lastSentMask &&
+                Math.abs(aimDX - lastSentAimX) < 0.01f &&
+                Math.abs(aimDY - lastSentAimY) < 0.01f) {
+            return;
+        }
+
         try {
             out.writeInt(mask);
+            out.writeFloat(aimDX);
+            out.writeFloat(aimDY);
             out.flush();
+
             lastSentMask = mask;
-        } catch (IOException e) { connected = false; }
+            lastSentAimX = aimDX;
+            lastSentAimY = aimDY;
+        } catch (IOException e) {
+            connected = false;
+        }
     }
 
-    public int     getLocalId()   { return localId; }
-    public boolean isConnected()  { return connected; }
+    public int     getLocalId()  { return localId; }
+    public boolean isConnected() { return connected; }
 
     @Override
     public void close() {
         connected = false;
-        try { if (socket != null) socket.close(); } catch (IOException ignored) {}
+        try {
+            if (socket != null) socket.close();
+        } catch (IOException ignored) {}
     }
 }

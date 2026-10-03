@@ -12,17 +12,13 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Протокол (каждый тик, сервер → клиент):
- *
+ * Протокол снипшота (каждый тик, сервер → клиент):
  *   int  playerCount
  *   per player:  int id, float x,y, int hp, float aimDX,aimDY, int kills, int weaponOrdinal
- *
  *   int  bulletCount
  *   per bullet:  float x,y, int radius, int colorRGB
- *
  *   int  zombieCount
  *   per zombie:  float x,y, int hp, int maxHp
- *
  *   int  wave
  */
 public class GameServer implements Closeable {
@@ -34,7 +30,10 @@ public class GameServer implements Closeable {
     private volatile boolean running;
     private ServerSocket serverSocket;
 
-    public GameServer(int port, World world) { this.port = port; this.world = world; }
+    public GameServer(int port, World world) {
+        this.port = port;
+        this.world = world;
+    }
 
     public void start() throws IOException {
         serverSocket = new ServerSocket(port);
@@ -58,12 +57,27 @@ public class GameServer implements Closeable {
         }
     }
 
+    /**
+     * Устанавливает маску ввода и вектор прицеливания (мыши) для локального игрока (хоста).
+     */
+    public void setPlayerInput(int playerId, int inputMask, float aimDX, float aimDY) {
+        Player p = world.getPlayers().get(playerId);
+        if (p != null) {
+            p.setInputMask(inputMask);
+            p.aimDX = aimDX;
+            p.aimDY = aimDY;
+        }
+    }
+
     public void broadcast() {
         List<Player> ps = new ArrayList<>(world.getPlayers().values());
-        List<Bullet>  bs = new ArrayList<>(world.getBullets());
-        List<Zombie>  zs = new ArrayList<>(world.getZombies());
-        int           wave = world.getWave();
-        for (ClientHandler c : clients) c.sendSnapshot(ps, bs, zs, wave);
+        List<Bullet> bs = new ArrayList<>(world.getBullets());
+        List<Zombie> zs = new ArrayList<>(world.getZombies());
+        int wave = 1; // Заглушка волны (если в World нет метода getWave)
+
+        for (ClientHandler c : clients) {
+            c.sendSnapshot(ps, bs, zs, wave);
+        }
     }
 
     public int getClientCount() { return clients.size(); }
@@ -71,7 +85,9 @@ public class GameServer implements Closeable {
     @Override
     public void close() {
         running = false;
-        try { if (serverSocket != null) serverSocket.close(); } catch (IOException ignored) {}
+        try {
+            if (serverSocket != null) serverSocket.close();
+        } catch (IOException ignored) {}
         for (ClientHandler c : clients) c.close();
     }
 
@@ -91,11 +107,26 @@ public class GameServer implements Closeable {
         @Override
         public void run() {
             try {
-                DataInputStream  in  = new DataInputStream(socket.getInputStream());
+                DataInputStream in = new DataInputStream(socket.getInputStream());
                 out = new DataOutputStream(socket.getOutputStream());
                 Player player = world.spawn(id);
-                synchronized (this) { out.writeInt(id); out.flush(); ready = true; }
-                while (running) player.setInputMask(in.readInt());
+
+                synchronized (this) {
+                    out.writeInt(id);
+                    out.flush();
+                    ready = true;
+                }
+
+                while (running) {
+                    // Клиент теперь отправляет: inputMask (int), aimDX (float), aimDY (float)
+                    int inputMask = in.readInt();
+                    float aimDX = in.readFloat();
+                    float aimDY = in.readFloat();
+
+                    player.setInputMask(inputMask);
+                    player.aimDX = aimDX;
+                    player.aimDY = aimDY;
+                }
             } catch (IOException ignored) {
             } finally {
                 world.getPlayers().remove(id);
@@ -105,10 +136,10 @@ public class GameServer implements Closeable {
         }
 
         synchronized void sendSnapshot(List<Player> players, List<Bullet> bullets,
-                                        List<Zombie> zombies, int wave) {
+                                       List<Zombie> zombies, int wave) {
             if (!ready) return;
             try {
-                // players
+                // 1. Players
                 out.writeInt(players.size());
                 for (Player p : players) {
                     out.writeInt(p.getId());
@@ -120,7 +151,7 @@ public class GameServer implements Closeable {
                     out.writeInt(p.kills);
                     out.writeInt(p.weaponOrdinal);
                 }
-                // bullets
+                // 2. Bullets
                 out.writeInt(bullets.size());
                 for (Bullet b : bullets) {
                     out.writeFloat((float) b.getX());
@@ -128,7 +159,7 @@ public class GameServer implements Closeable {
                     out.writeInt(b.getRadius());
                     out.writeInt(b.color.getRGB());
                 }
-                // zombies
+                // 3. Zombies
                 out.writeInt(zombies.size());
                 for (Zombie z : zombies) {
                     out.writeFloat((float) z.getX());
@@ -136,7 +167,7 @@ public class GameServer implements Closeable {
                     out.writeInt(z.getHp());
                     out.writeInt(z.getMaxHp());
                 }
-                // wave
+                // 4. Wave
                 out.writeInt(wave);
                 out.flush();
             } catch (IOException e) {
@@ -144,6 +175,8 @@ public class GameServer implements Closeable {
             }
         }
 
-        void close() { try { socket.close(); } catch (IOException ignored) {} }
+        void close() {
+            try { socket.close(); } catch (IOException ignored) {}
+        }
     }
 }
