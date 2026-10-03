@@ -12,35 +12,29 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Сервер (хост). Игровая логика считается здесь.
+ * Протокол (каждый тик, сервер → клиент):
  *
- * Протокол (DataStream, big-endian, TCP):
+ *   int  playerCount
+ *   per player:  int id, float x,y, int hp, float aimDX,aimDY, int kills, int weaponOrdinal
  *
- *   РУКОПОЖАТИЕ (один раз, сервер → клиент):
- *     int yourId
+ *   int  bulletCount
+ *   per bullet:  float x,y, int radius, int colorRGB
  *
- *   СНИМОК МИРА (каждый тик, сервер → клиент):
- *     int  playerCount
- *     per player: int id, float x, float y, int hp, float aimDX, float aimDY
- *     int  bulletCount
- *     per bullet: float x, float y
+ *   int  zombieCount
+ *   per zombie:  float x,y, int hp, int maxHp
  *
- *   ВВОД (клиент → сервер, при изменении):
- *     int inputMask
+ *   int  wave
  */
 public class GameServer implements Closeable {
 
-    private final int            port;
-    private final World          world;
+    private final int  port;
+    private final World world;
     private final List<ClientHandler> clients = new CopyOnWriteArrayList<>();
-    private final AtomicInteger  nextId  = new AtomicInteger(1);
-    private volatile boolean     running;
-    private ServerSocket         serverSocket;
+    private final AtomicInteger nextId = new AtomicInteger(1);
+    private volatile boolean running;
+    private ServerSocket serverSocket;
 
-    public GameServer(int port, World world) {
-        this.port  = port;
-        this.world = world;
-    }
+    public GameServer(int port, World world) { this.port = port; this.world = world; }
 
     public void start() throws IOException {
         serverSocket = new ServerSocket(port);
@@ -59,16 +53,17 @@ public class GameServer implements Closeable {
                 clients.add(h);
                 h.start();
             } catch (IOException e) {
-                if (running) System.err.println("accept error: " + e.getMessage());
+                if (running) System.err.println("accept: " + e.getMessage());
             }
         }
     }
 
-    /** Разослать снимок мира всем клиентам. */
     public void broadcast() {
-        List<Player>  ps = new ArrayList<>(world.getPlayers().values());
+        List<Player> ps = new ArrayList<>(world.getPlayers().values());
         List<Bullet>  bs = new ArrayList<>(world.getBullets());
-        for (ClientHandler c : clients) c.sendSnapshot(ps, bs);
+        List<Zombie>  zs = new ArrayList<>(world.getZombies());
+        int           wave = world.getWave();
+        for (ClientHandler c : clients) c.sendSnapshot(ps, bs, zs, wave);
     }
 
     public int getClientCount() { return clients.size(); }
@@ -79,8 +74,6 @@ public class GameServer implements Closeable {
         try { if (serverSocket != null) serverSocket.close(); } catch (IOException ignored) {}
         for (ClientHandler c : clients) c.close();
     }
-
-    // ── внутренний класс ─────────────────────────────────────────────────────
 
     private class ClientHandler extends Thread {
         private final Socket socket;
@@ -100,17 +93,9 @@ public class GameServer implements Closeable {
             try {
                 DataInputStream  in  = new DataInputStream(socket.getInputStream());
                 out = new DataOutputStream(socket.getOutputStream());
-
                 Player player = world.spawn(id);
-                synchronized (this) {
-                    out.writeInt(id);
-                    out.flush();
-                    ready = true;
-                }
-
-                while (running) {
-                    player.setInputMask(in.readInt());
-                }
+                synchronized (this) { out.writeInt(id); out.flush(); ready = true; }
+                while (running) player.setInputMask(in.readInt());
             } catch (IOException ignored) {
             } finally {
                 world.getPlayers().remove(id);
@@ -119,9 +104,11 @@ public class GameServer implements Closeable {
             }
         }
 
-        synchronized void sendSnapshot(List<Player> players, List<Bullet> bullets) {
+        synchronized void sendSnapshot(List<Player> players, List<Bullet> bullets,
+                                        List<Zombie> zombies, int wave) {
             if (!ready) return;
             try {
+                // players
                 out.writeInt(players.size());
                 for (Player p : players) {
                     out.writeInt(p.getId());
@@ -130,20 +117,33 @@ public class GameServer implements Closeable {
                     out.writeInt(p.hp);
                     out.writeFloat(p.aimDX);
                     out.writeFloat(p.aimDY);
+                    out.writeInt(p.kills);
+                    out.writeInt(p.weaponOrdinal);
                 }
+                // bullets
                 out.writeInt(bullets.size());
                 for (Bullet b : bullets) {
                     out.writeFloat((float) b.getX());
                     out.writeFloat((float) b.getY());
+                    out.writeInt(b.getRadius());
+                    out.writeInt(b.color.getRGB());
                 }
+                // zombies
+                out.writeInt(zombies.size());
+                for (Zombie z : zombies) {
+                    out.writeFloat((float) z.getX());
+                    out.writeFloat((float) z.getY());
+                    out.writeInt(z.getHp());
+                    out.writeInt(z.getMaxHp());
+                }
+                // wave
+                out.writeInt(wave);
                 out.flush();
             } catch (IOException e) {
                 close();
             }
         }
 
-        void close() {
-            try { socket.close(); } catch (IOException ignored) {}
-        }
+        void close() { try { socket.close(); } catch (IOException ignored) {} }
     }
 }
