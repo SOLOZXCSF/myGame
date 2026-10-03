@@ -15,7 +15,7 @@ public enum WeaponType {
     PISTOL  ("Пистолет",    0.35,  520,          5,  Color.YELLOW,           0),
     SHOTGUN ("Дробовик",    0.55,  440,          5,  Color.ORANGE,          10),
     RIFLE   ("Штурмовая",   0.10,  680,          4,  new Color(100,255,100), 100),
-    ROCKET  ("Ракетница",   0.80,  380,         12,  new Color(255, 80, 30), 200);
+    ROCKET  ("Пулемет",   0.05,  680,         4,  new Color(255, 80, 30), 200);
 
     public final String name;
     public final double shootDelay;

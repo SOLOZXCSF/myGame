@@ -36,9 +36,10 @@ public class World {
         {80,  520}, {400, 560}, {720, 520}
     };
 
+
     public World() {
         for (double[] c : HOLE_COORDS) {
-            holes.add(new ZombieHole(c[0], c[1], 4.0));
+            holes.add(new ZombieHole(c[0], c[1], 10.0));
         }
     }
 
@@ -80,7 +81,7 @@ public class World {
         if (!playerList.isEmpty()) {
             for (ZombieHole h : holes) {
                 if (h.update(dt)) {
-                    int hp    = 1 + wave / 3;          // крепче с волнами
+                    int hp    = 1;          // крепче с волнами
                     double spd = Math.min(SPEED_FOR_WAVE(wave), 150);
                     zombies.add(new Zombie(zombieIdSeq.getAndIncrement(),
                                           h.x, h.y, hp, spd));
