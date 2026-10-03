@@ -7,6 +7,7 @@ import java.awt.Dimension;
 import java.awt.Font;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
+import java.awt.Rectangle;
 import java.awt.RenderingHints;
 import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
@@ -29,6 +30,11 @@ public class GamePanel extends JPanel implements Runnable {
     private int mouseX    = 0;
     private int mouseY    = 0;
 
+    // Смерть и Респавн
+    private double respawnCooldown = 0;
+    private static final double RESPAWN_DELAY = 5.0; // 5 секунд задержки респавна
+    private final Rectangle respawnButtonBounds = new Rectangle(World.WIDTH / 2 - 100, World.HEIGHT / 2 + 50, 200, 50);
+
     public GamePanel(World world, GameServer server, GameClient client, int myPlayerId, Runnable onExit) {
         this.world      = world;
         this.server     = server;
@@ -44,7 +50,6 @@ public class GamePanel extends JPanel implements Runnable {
     }
 
     private void setupControls() {
-        // --- КЛАВИАТУРА ---
         addKeyListener(new KeyAdapter() {
             @Override
             public void keyPressed(KeyEvent e) {
@@ -57,11 +62,21 @@ public class GamePanel extends JPanel implements Runnable {
             }
         });
 
-        // --- МЫШЬ (Стрельба) ---
         addMouseListener(new MouseAdapter() {
             @Override
             public void mousePressed(MouseEvent e) {
                 if (e.getButton() == MouseEvent.BUTTON1) {
+                    Player me = world.getPlayers().get(myPlayerId);
+
+                    // Обработка клика по кнопке Респавна
+                    if (me != null && me.hp <= 0 && respawnCooldown <= 0) {
+                        if (respawnButtonBounds.contains(e.getPoint())) {
+                            world.respawnPlayer(myPlayerId);
+                            respawnCooldown = 0;
+                            return;
+                        }
+                    }
+
                     inputMask |= KeyInput.SHOOT;
                     sendInputWithAim();
                 }
@@ -76,7 +91,6 @@ public class GamePanel extends JPanel implements Runnable {
             }
         });
 
-        // --- МЫШЬ (Прицеливание) ---
         MouseMotionAdapter mouseAdapter = new MouseMotionAdapter() {
             @Override
             public void mouseMoved(MouseEvent e) {
@@ -150,6 +164,16 @@ public class GamePanel extends JPanel implements Runnable {
             double dt = (now - lastTime) / 1e9;
             lastTime = now;
 
+            // Обновление таймера респавна
+            Player me = world.getPlayers().get(myPlayerId);
+            if (me != null && me.hp <= 0) {
+                if (respawnCooldown > 0) {
+                    respawnCooldown -= dt;
+                }
+            } else {
+                respawnCooldown = RESPAWN_DELAY; // Сброс таймера на случай смерти
+            }
+
             if (server != null) {
                 world.update(dt);
             } else {
@@ -175,37 +199,48 @@ public class GamePanel extends JPanel implements Runnable {
 
         g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
 
-        // 1. Отрисовка стен
+        // 1. Отрисовка луж крови под всеми объектами
+        for (BloodPuddle bp : world.getBloodPuddles()) {
+            bp.render(g2d);
+        }
+
+        // 2. Отрисовка стен
         for (Wall wall : world.getWalls()) {
             wall.draw(g2d);
         }
 
-        // 2. Зомби
+        // 3. Зомби
         for (Zombie z : world.getZombies()) {
             z.render(g2d);
         }
 
-        // 3. Пули
+        // 4. Пули
         for (Bullet b : world.getBullets()) {
             b.render(g2d);
         }
 
-        // 4. Игроки (каждый игрок сам рисует свои ХП под своими ногами)
+        // 5. Игроки
         for (Player p : world.getPlayers().values()) {
-            p.render(g2d);
+            if (p.hp > 0) {
+                p.render(g2d);
+            }
         }
 
-        // 5. Отрисовка HUD (Интерфейса сверху)
+        // 6. HUD
         drawHUD(g2d);
 
-        // 6. Прицел мыши
-        drawCrosshair(g2d, mouseX, mouseY);
+        // 7. Экран смерти (если погиб)
+        Player me = world.getPlayers().get(myPlayerId);
+        if (me != null && me.hp <= 0) {
+            drawDeathMenu(g2d);
+        } else {
+            drawCrosshair(g2d, mouseX, mouseY);
+        }
     }
 
     private void drawHUD(Graphics2D g) {
         Player me = world.getPlayers().get(myPlayerId);
 
-        // Плашка HUD на верху экрана
         g.setColor(new Color(0, 0, 0, 180));
         g.fillRect(10, 10, 280, 75);
         g.setColor(new Color(100, 100, 100));
@@ -214,7 +249,6 @@ public class GamePanel extends JPanel implements Runnable {
         g.setFont(new Font("SansSerif", Font.BOLD, 14));
 
         if (me != null) {
-            // Здоровье
             g.setColor(Color.WHITE);
             g.drawString("Здоровье: ", 20, 32);
             for (int i = 0; i < Player.MAX_HP; i++) {
@@ -224,19 +258,13 @@ public class GamePanel extends JPanel implements Runnable {
                 g.drawRect(100 + i * 22, 20, 18, 14);
             }
 
-            // Убийства
             g.setColor(Color.YELLOW);
             g.drawString("Убийств: " + me.kills, 20, 52);
 
-            // Оружие
             g.setColor(Color.CYAN);
             g.drawString("Оружие: " + me.getWeapon().name, 20, 72);
-        } else {
-            g.setColor(Color.RED);
-            g.drawString("ВЫ ПОГИБЛИ", 20, 45);
         }
 
-        // Информация о волне / клиентах
         int waveNum = (client != null) ? client.wave : 1;
         String infoStr = "Волна: " + waveNum;
         if (server != null) {
@@ -247,6 +275,41 @@ public class GamePanel extends JPanel implements Runnable {
         g.fillRect(World.WIDTH - 180, 10, 170, 30);
         g.setColor(Color.WHITE);
         g.drawString(infoStr, World.WIDTH - 170, 30);
+    }
+
+    private void drawDeathMenu(Graphics2D g) {
+        // Затемнение экрана
+        g.setColor(new Color(0, 0, 0, 200));
+        g.fillRect(0, 0, World.WIDTH, World.HEIGHT);
+
+        // Текст "ВЫ ПОГИБЛИ"
+        g.setFont(new Font("SansSerif", Font.BOLD, 36));
+        g.setColor(Color.RED);
+        String deathText = "ВЫ ПОГИБЛИ";
+        int textWidth = g.getFontMetrics().stringWidth(deathText);
+        g.drawString(deathText, (World.WIDTH - textWidth) / 2, World.HEIGHT / 2 - 40);
+
+        // Кнопка возрождения или таймер
+        if (respawnCooldown > 0) {
+            g.setFont(new Font("SansSerif", Font.PLAIN, 20));
+            g.setColor(Color.LIGHT_GRAY);
+            String cdText = String.format("Возрождение через: %.1f сек", respawnCooldown);
+            int cdWidth = g.getFontMetrics().stringWidth(cdText);
+            g.drawString(cdText, (World.WIDTH - cdWidth) / 2, World.HEIGHT / 2 + 20);
+        } else {
+            // Кнопка Респавна
+            boolean hover = respawnButtonBounds.contains(mouseX, mouseY);
+            g.setColor(hover ? new Color(180, 40, 40) : new Color(120, 20, 20));
+            g.fillRect(respawnButtonBounds.x, respawnButtonBounds.y, respawnButtonBounds.width, respawnButtonBounds.height);
+
+            g.setColor(Color.WHITE);
+            g.drawRect(respawnButtonBounds.x, respawnButtonBounds.y, respawnButtonBounds.width, respawnButtonBounds.height);
+
+            g.setFont(new Font("SansSerif", Font.BOLD, 18));
+            String btnText = "ВОЗРОДИТЬСЯ";
+            int btnTextWidth = g.getFontMetrics().stringWidth(btnText);
+            g.drawString(btnText, respawnButtonBounds.x + (respawnButtonBounds.width - btnTextWidth) / 2, respawnButtonBounds.y + 32);
+        }
     }
 
     private void drawCrosshair(Graphics2D g, int x, int y) {
