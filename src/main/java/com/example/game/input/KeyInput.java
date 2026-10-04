@@ -11,11 +11,12 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class KeyInput extends KeyAdapter {
 
-    public static final int UP    = 1;
-    public static final int DOWN  = 2;
-    public static final int LEFT  = 4;
-    public static final int RIGHT = 8;
-    public static final int SHOOT = 16;
+    public static final int UP       = 1;
+    public static final int DOWN     = 2;
+    public static final int LEFT     = 4;
+    public static final int RIGHT    = 8;
+    public static final int SHOOT    = 16;
+    public static final int INTERACT = 32;   // F — взаимодействие с NPC
 
     private final Set<Integer> pressed = ConcurrentHashMap.newKeySet();
 
@@ -31,6 +32,7 @@ public class KeyInput extends KeyAdapter {
         if (isDown(KeyEvent.VK_LEFT)  || isDown(KeyEvent.VK_A)) m |= LEFT;
         if (isDown(KeyEvent.VK_RIGHT) || isDown(KeyEvent.VK_D)) m |= RIGHT;
         if (isDown(KeyEvent.VK_SPACE) || isDown(KeyEvent.VK_ENTER)) m |= SHOOT;
+        if (isDown(KeyEvent.VK_F)) m |= INTERACT;
         return m;
     }
 }

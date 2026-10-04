@@ -20,4 +20,12 @@ public final class EntityFactory {
                                       double ndx, double ndy, WeaponType w) {
         return new BulletEntity(ownerId, cx, cy, ndx, ndy, w);
     }
+
+    public static ResourceNodeEntity resourceNode(int id, double x, double y) {
+        return new ResourceNodeEntity(id, x, y);
+    }
+
+    public static ShopNpcEntity shopNpc(int id, double cx, double cy) {
+        return new ShopNpcEntity(id, cx, cy);
+    }
 }

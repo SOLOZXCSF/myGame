@@ -29,7 +29,7 @@ public class ShootingSystem implements System {
 
             // прицел из мыши
             wp.setAim(inp.mouseWorldX, inp.mouseWorldY, tr.getCenterX(), tr.getCenterY());
-            wp.firing = (inp.inputMask & KeyInput.SHOOT) != 0;
+            wp.firing = !wp.pickaxeMode && (inp.inputMask & KeyInput.SHOOT) != 0;
 
             if (wp.firing && wp.cooldown <= 0) {
                 WeaponType w = WeaponType.forOrdinal(wp.weaponOrdinal);

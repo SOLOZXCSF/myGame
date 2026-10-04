@@ -35,6 +35,7 @@ public class CollisionSystem implements System {
                     HealthComponent zh = z.require(HealthComponent.class);
                     if (zh.hit(1)) {
                         z.kill();
+                        // статистика убийств (без прогрессии оружия)
                         PlayerEntity killer = world.getPlayers().get(b.getOwnerId());
                         if (killer != null) killer.addKill();
                     }
