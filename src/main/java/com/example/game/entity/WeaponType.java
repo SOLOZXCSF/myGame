@@ -1,0 +1,35 @@
+package com.example.game.entity;
+
+import java.awt.Color;
+
+public enum WeaponType {
+    PISTOL  ("Пистолет",  0.35, 520,  5, Color.YELLOW,           0),
+    SHOTGUN ("Дробовик",  0.55, 440,  5, Color.ORANGE,           10),
+    RIFLE   ("Штурмовая", 0.10, 680,  4, new Color(100,255,100), 100),
+    ROCKET  ("Ракетница", 0.80, 380, 12, new Color(255, 80, 30), 200);
+
+    public final String name;
+    public final double shootDelay;
+    public final double bulletSpeed;
+    public final int    bulletRadius;
+    public final Color  bulletColor;
+    public final int    killsNeeded;
+
+    WeaponType(String name, double shootDelay, double bulletSpeed,
+               int bulletRadius, Color bulletColor, int killsNeeded) {
+        this.name = name; this.shootDelay = shootDelay;
+        this.bulletSpeed = bulletSpeed; this.bulletRadius = bulletRadius;
+        this.bulletColor = bulletColor; this.killsNeeded  = killsNeeded;
+    }
+
+    public static WeaponType forKills(int kills) {
+        WeaponType best = PISTOL;
+        for (WeaponType w : values()) if (kills >= w.killsNeeded) best = w;
+        return best;
+    }
+
+    public static WeaponType forOrdinal(int ord) {
+        WeaponType[] v = values();
+        return v[Math.max(0, Math.min(ord, v.length - 1))];
+    }
+}
