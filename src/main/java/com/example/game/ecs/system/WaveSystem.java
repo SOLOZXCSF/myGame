@@ -8,6 +8,11 @@ import com.example.game.entity.ZombieEntity;
 public class WaveSystem implements System {
 
     private static final double WAVE_DURATION = 30.0;
+    private static int zombie_count = 0;
+
+    public static void killZombie() {
+        zombie_count--;
+    }
 
     private int    wave  = 1;
     private double timer = 0;
@@ -28,7 +33,10 @@ public class WaveSystem implements System {
             if (h.update(dt)) {
                 int    hp  = 1 + wave / 3;
                 double spd = Math.min(55 + wave * 8, 160);
-                world.addZombie(new ZombieEntity(world.nextZombieId(), h.x, h.y, hp, spd));
+                if (zombie_count != 10) {
+                    world.addZombie(new ZombieEntity(world.nextZombieId(), h.x, h.y, hp, spd));
+                    zombie_count++;
+                }
             }
         }
 

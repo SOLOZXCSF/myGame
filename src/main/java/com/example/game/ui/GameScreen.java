@@ -24,11 +24,8 @@ public class GameScreen implements Screen {
     private int  fps = 0, frameCount = 0;
     private long fpsTimer = System.nanoTime();
 
-    // HUD-уведомления
     private String notice     = "";
     private double noticeTime = 0;
-
-    // магазин
     private boolean shopMenuOpen = false;
 
     public GameScreen(GameContext ctx, ScreenManager screens, Runnable onExit) {
@@ -44,12 +41,16 @@ public class GameScreen implements Screen {
 
     @Override public void onEnable() {
         ScreenManager.Canvas c = screens.getCanvas();
-        c.addKeyListener(keys); c.addMouseListener(mouse); c.addMouseMotionListener(mouse);
+        c.addKeyListener(keys);
+        c.addMouseListener(mouse);
+        c.addMouseMotionListener(mouse);
     }
 
     @Override public void onDisable() {
         ScreenManager.Canvas c = screens.getCanvas();
-        c.removeKeyListener(keys); c.removeMouseListener(mouse); c.removeMouseMotionListener(mouse);
+        c.removeKeyListener(keys);
+        c.removeMouseListener(mouse);
+        c.removeMouseMotionListener(mouse);
         ctx.shutdown();
     }
 
@@ -65,24 +66,17 @@ public class GameScreen implements Screen {
 
         PlayerEntity me = ctx.world.getPlayers().get(ctx.localId);
 
-        // Переключение слотов 1–6
         if (me != null) {
             InventoryComponent inv = me.require(InventoryComponent.class);
             for (int i = 0; i < InventoryComponent.SLOTS; i++) {
                 if (keys.isDown(KeyEvent.VK_1 + i)) {
                     inv.setActive(i);
-                    // синхронизировать weaponOrdinal при выборе оружия из слота
                     syncWeaponSlot(me, inv, i);
                 }
             }
-            // покупка в меню магазина клавишами Z/X/C/V
-            if (inv.shopMenuOpen) {
-                handleShopBuy(me, inv);
-            }
+            if (inv.shopMenuOpen) handleShopBuy(me, inv);
             shopMenuOpen = inv.shopMenuOpen;
-        }
 
-        if (me != null) {
             InputComponent inp = me.require(InputComponent.class);
             int mask = keys.getMask();
             if (mouse.isLeftDown()) mask |= KeyInput.SHOOT;
@@ -105,21 +99,23 @@ public class GameScreen implements Screen {
                 ctx.client.sendInput(inp.inputMask, inp.mouseWorldX, inp.mouseWorldY);
             }
             for (PlayerEntity p : ctx.world.getPlayers().values())
-                p.get(HealthComponent.class).ifPresent(h -> { if (h.hitFlash > 0) h.hitFlash -= dt; });
+                p.get(HealthComponent.class)
+                 .ifPresent(h -> { if (h.hitFlash > 0) h.hitFlash -= dt; });
         }
 
         if (noticeTime > 0) noticeTime -= dt;
 
         frameCount++;
         long now = System.nanoTime();
-        if (now - fpsTimer >= 1_000_000_000L) { fps = frameCount; frameCount = 0; fpsTimer = now; }
+        if (now - fpsTimer >= 1_000_000_000L) {
+            fps = frameCount; frameCount = 0; fpsTimer = now;
+        }
     }
 
-    /** Если в слоте оружие — установить weaponOrdinal; если кирка — pickaxeMode. */
     private void syncWeaponSlot(PlayerEntity p, InventoryComponent inv, int slot) {
         ItemType item = inv.get(slot);
         WeaponComponent wp = p.require(WeaponComponent.class);
-        if (slot == 0) {                          // кирка
+        if (slot == 0) {
             wp.pickaxeMode = true;
         } else if (item != null && item.isWeapon()) {
             wp.pickaxeMode   = false;
@@ -130,18 +126,14 @@ public class GameScreen implements Screen {
     }
 
     private void handleShopBuy(PlayerEntity me, InventoryComponent inv) {
-        // Z/X/C/V = купить Дробовик/Штурмовую/Ракетницу
         if (keys.isDown(KeyEvent.VK_Z)) tryBuy(me, inv, ItemType.WPN_SHOTGUN, ShopNpcEntity.PRICE_SHOTGUN);
         if (keys.isDown(KeyEvent.VK_X)) tryBuy(me, inv, ItemType.WPN_RIFLE,   ShopNpcEntity.PRICE_RIFLE);
         if (keys.isDown(KeyEvent.VK_V)) tryBuy(me, inv, ItemType.WPN_ROCKET,  ShopNpcEntity.PRICE_ROCKET);
     }
 
     private void tryBuy(PlayerEntity me, InventoryComponent inv, ItemType item, int price) {
-        if (inv.buyWeapon(item, price)) {
-            showNotice("Куплено: " + item.name);
-        } else if (inv.gold < price) {
-            showNotice("Недостаточно золота! (" + price + "g)");
-        }
+        if (inv.buyWeapon(item, price)) showNotice("Куплено: " + item.name);
+        else showNotice("Недостаточно золота! (" + price + "g)");
     }
 
     private void showNotice(String text) { notice = text; noticeTime = 2.5; }
@@ -151,15 +143,32 @@ public class GameScreen implements Screen {
     @Override
     public void render(Graphics2D g, int w, int h) {
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_SPEED);
 
         AffineTransform saved = camera.begin(g);
-        drawGrid(g);
-        ctx.world.getHoles()        .forEach(e -> e.render(g));
+
+        // 1. Карта (самый нижний слой)
+        if (ctx.world.getGameMap() != null)
+            ctx.world.getGameMap().render(g,
+                    camera.getOffsetX(), camera.getOffsetY(), w, h);
+
+        // 2. Дырки зомби поверх карты
+        ctx.world.getHoles().forEach(e -> e.render(g));
+
+        // 3. Камни / ресурсы
         ctx.world.getResourceNodes().forEach(e -> e.render(g));
+
+        // 4. Лавка
         ShopNpcEntity shop = ctx.world.getShop();
         if (shop != null) shop.render(g);
-        ctx.world.getZombies()      .forEach(e -> e.render(g));
-        ctx.world.getBullets()      .forEach(e -> e.render(g));
+
+        // 5. Зомби
+        ctx.world.getZombies().forEach(e -> e.render(g));
+
+        // 6. Пули
+        ctx.world.getBullets().forEach(e -> e.render(g));
+
+        // 7. Игроки
         ctx.world.getPlayers().values().forEach(p -> {
             p.render(g);
             if (p.getId() == ctx.localId) {
@@ -170,44 +179,37 @@ public class GameScreen implements Screen {
                 g.setStroke(new BasicStroke(1));
             }
         });
+
         camera.end(g, saved);
 
+        // 8. HUD (экранные координаты)
         drawHud(g, w, h);
-    }
-
-    private void drawGrid(Graphics2D g) {
-        g.setColor(new Color(45, 45, 60));
-        int ww = ctx.world.getWidth(), wh = ctx.world.getHeight();
-        for (int x = 0; x < ww; x += 60) g.drawLine(x, 0, x, wh);
-        for (int y = 0; y < wh; y += 60) g.drawLine(0, y, ww, y);
     }
 
     private void drawHud(Graphics2D g, int w, int h) {
         PlayerEntity me = ctx.world.getPlayers().get(ctx.localId);
         int wave = (ctx.client != null) ? ctx.client.wave : ctx.world.getWave();
 
-        // ── строка статуса ──
-        g.setFont(new Font("SansSerif", Font.BOLD, 13));
-        g.setColor(new Color(200, 200, 200, 200));
+        // Статус-бар сверху
+        g.setColor(new Color(0, 0, 0, 140));
+        g.fillRect(0, 0, w, 26);
+
+        g.setFont(new Font("SansSerif", Font.BOLD, 12));
+        g.setColor(new Color(220, 220, 220));
         String role = ctx.isHost() ? "ХОСТ  клиентов: " + ctx.server.getClientCount() : "КЛИЕНТ";
         g.drawString(role + "  |  FPS: " + fps + "  |  Волна: " + wave
-                + "  |  WASD — движение  мышь — прицел  ЛКМ/Пробел — атака  F — лавка", 10, 20);
+                + "  |  WASD — движение   мышь — прицел   ЛКМ/Пробел — атака   F — лавка",
+                10, 17);
 
         if (me != null) {
             InventoryComponent inv = me.require(InventoryComponent.class);
-            // золото и камни
             int stones = inv.countOf(ItemType.STONE);
-            drawPill(g, "⛏ Камней: " + stones + "   💰 Золото: " + inv.gold
-                      + "   Убийств: " + me.getKills(), w / 2, h - 75);
-
-            // инвентарь
-            drawInventory(g, w, h, inv, me);
-
-            // меню магазина
+            drawPill(g, "⛏ " + stones + "  💰 " + inv.gold + "g  ☠ " + me.getKills(),
+                     w / 2, h - 75);
+            drawInventory(g, w, h, inv);
             if (shopMenuOpen) drawShopMenu(g, w, h, inv);
         }
 
-        // уведомление
         if (noticeTime > 0) {
             float alpha = (float) Math.min(1.0, noticeTime);
             g.setColor(new Color(1f, 0.95f, 0.2f, alpha));
@@ -231,31 +233,25 @@ public class GameScreen implements Screen {
     private static final int SLOT_GAP    = 6;
     private static final int SLOT_RADIUS = 8;
 
-    private void drawInventory(Graphics2D g, int w, int h, InventoryComponent inv, PlayerEntity me) {
+    private void drawInventory(Graphics2D g, int w, int h, InventoryComponent inv) {
         int total  = InventoryComponent.SLOTS;
         int barW   = total * SLOT_SIZE + (total - 1) * SLOT_GAP;
         int startX = (w - barW) / 2;
         int baseY  = h - SLOT_SIZE - 12;
 
-        g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING,
-                           RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
-
         for (int i = 0; i < total; i++) {
             boolean active = (i == inv.activeSlot);
             int sx = startX + i * (SLOT_SIZE + SLOT_GAP);
-            int sy = baseY - (active ? 6 : 0);
+            int sy = baseY  - (active ? 6 : 0);
 
-            // фон
             g.setColor(active ? new Color(40,40,60,220) : new Color(20,20,35,180));
             g.fill(new RoundRectangle2D.Double(sx, sy, SLOT_SIZE, SLOT_SIZE, SLOT_RADIUS, SLOT_RADIUS));
 
-            // рамка
             g.setColor(active ? new Color(200,200,255,230) : new Color(80,80,110,180));
             g.setStroke(new BasicStroke(active ? 2 : 1));
             g.draw(new RoundRectangle2D.Double(sx, sy, SLOT_SIZE, SLOT_SIZE, SLOT_RADIUS, SLOT_RADIUS));
             g.setStroke(new BasicStroke(1));
 
-            // содержимое
             ItemType item = inv.get(i);
             if (item != null) {
                 g.setFont(new Font("SansSerif", Font.BOLD, 22));
@@ -264,24 +260,20 @@ public class GameScreen implements Screen {
                 int symW = g.getFontMetrics().stringWidth(sym);
                 g.drawString(sym, sx + (SLOT_SIZE - symW) / 2, sy + SLOT_SIZE / 2 + 5);
 
-                // счётчик для стакающихся
                 int cnt = inv.count(i);
                 if (item.stackable && cnt > 0) {
                     g.setFont(new Font("SansSerif", Font.BOLD, 11));
                     g.setColor(Color.WHITE);
                     String cs = String.valueOf(cnt);
-                    g.drawString(cs, sx + SLOT_SIZE - g.getFontMetrics().stringWidth(cs) - 3,
-                                 sy + SLOT_SIZE - 4);
+                    g.drawString(cs, sx + SLOT_SIZE - g.getFontMetrics().stringWidth(cs) - 3, sy + SLOT_SIZE - 4);
                 }
 
-                // название
                 g.setFont(new Font("SansSerif", Font.PLAIN, 9));
                 g.setColor(new Color(200,200,200, active ? 220 : 150));
                 int nw = g.getFontMetrics().stringWidth(item.name);
                 g.drawString(item.name, sx + (SLOT_SIZE - nw) / 2, sy + SLOT_SIZE - 5);
             }
 
-            // номер слота
             g.setFont(new Font("SansSerif", Font.BOLD, 9));
             g.setColor(new Color(120,120,160, active ? 220 : 130));
             g.drawString(String.valueOf(i + 1), sx + 4, sy + 12);
@@ -294,7 +286,6 @@ public class GameScreen implements Screen {
         int mw = 320, mh = 220;
         int mx = (w - mw) / 2, my = h / 2 - mh - 20;
 
-        // фон
         g.setColor(new Color(15, 12, 8, 230));
         g.fill(new RoundRectangle2D.Double(mx, my, mw, mh, 12, 12));
         g.setColor(new Color(255, 220, 50, 180));
@@ -305,53 +296,44 @@ public class GameScreen implements Screen {
         g.setFont(new Font("SansSerif", Font.BOLD, 15));
         g.setColor(new Color(255, 220, 50));
         g.drawString("⚒  ЛАВКА СКУПЩИКА", mx + 12, my + 22);
-
         g.setFont(new Font("SansSerif", Font.PLAIN, 12));
         g.setColor(new Color(200, 180, 140));
         g.drawString("Золото: " + inv.gold, mx + 12, my + 42);
 
-        // товары
-        Object[][] shop = {
+        Object[][] items = {
             {"Z", ItemType.WPN_SHOTGUN, ShopNpcEntity.PRICE_SHOTGUN},
             {"X", ItemType.WPN_RIFLE,   ShopNpcEntity.PRICE_RIFLE},
             {"V", ItemType.WPN_ROCKET,  ShopNpcEntity.PRICE_ROCKET},
         };
-
-        for (int i = 0; i < shop.length; i++) {
-            String   key   = (String)   shop[i][0];
-            ItemType item  = (ItemType) shop[i][1];
-            int      price = (int)      shop[i][2];
+        for (int i = 0; i < items.length; i++) {
+            String   key   = (String)   items[i][0];
+            ItemType item  = (ItemType) items[i][1];
+            int      price = (int)      items[i][2];
             boolean  can   = inv.gold >= price;
-
             int ry = my + 62 + i * 46;
+
             g.setColor(can ? new Color(40,50,30,180) : new Color(40,30,30,150));
-            g.fill(new RoundRectangle2D.Double(mx + 8, ry, mw - 16, 38, 6, 6));
-
+            g.fill(new RoundRectangle2D.Double(mx+8, ry, mw-16, 38, 6, 6));
             g.setFont(new Font("SansSerif", Font.BOLD, 13));
-            g.setColor(new Color(100, 120, 80));
-            g.drawString("[" + key + "]", mx + 16, ry + 24);
-
+            g.setColor(new Color(100,120,80));
+            g.drawString("[" + key + "]", mx+16, ry+24);
             g.setColor(can ? item.color : item.color.darker());
-            g.setFont(new Font("SansSerif", Font.BOLD, 13));
-            g.drawString(item.symbol + " " + item.name, mx + 50, ry + 24);
-
+            g.drawString(item.symbol + " " + item.name, mx+50, ry+24);
             g.setColor(can ? new Color(255,220,50) : new Color(150,120,50));
-            g.setFont(new Font("SansSerif", Font.BOLD, 12));
-            g.drawString(price + "g", mx + mw - 40, ry + 24);
+            g.drawString(price + "g", mx+mw-40, ry+24);
         }
-
         g.setFont(new Font("SansSerif", Font.PLAIN, 10));
-        g.setColor(new Color(140, 130, 110));
-        g.drawString("Отойди от лавки чтобы закрыть", mx + 12, my + mh - 8);
+        g.setColor(new Color(140,130,110));
+        g.drawString("Отойди от лавки чтобы закрыть", mx+12, my+mh-8);
     }
 
     private void drawPill(Graphics2D g, String text, int cx, int cy) {
         g.setFont(new Font("SansSerif", Font.BOLD, 13));
         int tw = g.getFontMetrics().stringWidth(text);
         int pw = tw + 20, ph = 20;
-        g.setColor(new Color(0, 0, 0, 160));
-        g.fill(new RoundRectangle2D.Double(cx - pw / 2.0, cy - ph / 2.0, pw, ph, 10, 10));
+        g.setColor(new Color(0,0,0,160));
+        g.fill(new RoundRectangle2D.Double(cx - pw/2.0, cy - ph/2.0, pw, ph, 10, 10));
         g.setColor(Color.WHITE);
-        g.drawString(text, cx - tw / 2, cy + 5);
+        g.drawString(text, cx - tw/2, cy+5);
     }
 }
